@@ -57,7 +57,7 @@ The repo includes a Rust bridge binary contract at `rustpush_bridge/` with comma
 By default, the bundled bridge reads payload files from its state directory (`payloads/*.json*`) and persists backfill cursor state.  
 Set `RUSTPUSH_BRIDGE_DELEGATE` to forward bridge commands to an external runtime binary.
 
-Build it:
+Build it for local non-Docker runs:
 
 ```bash
 cd rustpush_bridge
@@ -69,6 +69,8 @@ Set in `.env`:
 - `LOCATION_BACKEND=rustpush`
 - `RUSTPUSH_BRIDGE_BIN=./rustpush_bridge/target/release/find-my-rustpush-bridge`
 - `RUSTPUSH_STATE_DIR=~/.find-my-timeline/rustpush`
+
+Docker images already bundle `find-my-rustpush-bridge`, so no local Cargo build is required for containerized runs.
 
 APS behavior follows OpenBubbles-style handling:
 
@@ -91,3 +93,53 @@ Set in `.env` or pass CLI flags:
 - `RUSTPUSH_SYNC_TIMEOUT_SEC`
 - `RUSTPUSH_APS_ENABLED`
 - `RUSTPUSH_APS_REFRESH_INTERVAL_SEC`
+
+## Docker
+
+### First-time setup
+
+```bash
+cp .env.example .env
+# edit .env (at minimum: ICLOUD_USERNAME)
+
+mkdir -p session data
+docker compose run --rm find-my-timeline find-my-timeline auth
+# enter 2FA code when prompted
+```
+
+### Run service
+
+```bash
+docker compose up -d --build
+# open http://127.0.0.1:5000
+```
+
+### Use rustpush backend in Docker
+
+Set these in `.env` before starting:
+
+```bash
+LOCATION_BACKEND=rustpush
+```
+
+Notes:
+
+- `docker-compose.yml` forces `RUSTPUSH_BRIDGE_BIN` to the in-container binary path.
+- Rustpush state persists in `./session/rustpush` on the host (mounted from `/root/.find-my-timeline/rustpush`).
+- For the bundled bridge contract mode, place payload files under `./session/rustpush/payloads/`:
+  - `sync.json`
+  - `backfill.jsonl`
+  - `aps.ndjson`
+- To use an external runtime bridge inside the container, set `RUSTPUSH_BRIDGE_DELEGATE` in `.env`.
+
+### Re-authenticate (session expired)
+
+```bash
+docker compose run --rm find-my-timeline find-my-timeline auth
+```
+
+### Stop
+
+```bash
+docker compose down
+```

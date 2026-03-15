@@ -9,5 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      - WEB_HOST=0.0.0.0
+      WEB_HOST: 0.0.0.0
+      RUSTPUSH_BRIDGE_BIN: /app/rustpush_bridge/target/release/find-my-rustpush-bridge
+      RUSTPUSH_STATE_DIR: /root/.find-my-timeline/rustpush
     restart: unless-stopped
