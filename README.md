@@ -54,8 +54,9 @@ The repo includes a Rust bridge binary contract at `rustpush_bridge/` with comma
 - `backfill-items`
 - `listen-aps`
 
-By default, the bundled bridge reads payload files from its state directory (`payloads/*.json*`) and persists backfill cursor state.  
-Set `RUSTPUSH_BRIDGE_DELEGATE` to forward bridge commands to an external runtime binary.
+Runtime default is delegated mode: set `RUSTPUSH_BRIDGE_DELEGATE` to a working rustpush runtime bridge binary.
+The bundled bridge in this repo is a contract shim; it is file-driven and does not query Apple APIs directly.
+If you intentionally want that contract mode, set `RUSTPUSH_ALLOW_CONTRACT_MODE=true`.
 
 Build it for local non-Docker runs:
 
@@ -69,6 +70,8 @@ Set in `.env`:
 - `LOCATION_BACKEND=rustpush`
 - `RUSTPUSH_BRIDGE_BIN=./rustpush_bridge/target/release/find-my-rustpush-bridge`
 - `RUSTPUSH_STATE_DIR=~/.find-my-timeline/rustpush`
+- `RUSTPUSH_BRIDGE_DELEGATE=/absolute/path/to/runtime/find-my-rustpush-bridge`
+- Optional explicit fallback only: `RUSTPUSH_ALLOW_CONTRACT_MODE=true`
 
 Docker images already bundle `find-my-rustpush-bridge`, so no local Cargo build is required for containerized runs.
 
@@ -101,6 +104,9 @@ Edit `.env` for rustpush:
 LOCATION_BACKEND=rustpush
 RUSTPUSH_BRIDGE_BIN=./rustpush_bridge/target/release/find-my-rustpush-bridge
 RUSTPUSH_STATE_DIR=${HOME}/.find-my-timeline/rustpush
+RUSTPUSH_BRIDGE_DELEGATE=/absolute/path/to/runtime/find-my-rustpush-bridge
+# Optional explicit fallback only:
+# RUSTPUSH_ALLOW_CONTRACT_MODE=true
 # optional if needed for bootstrap:
 # RUSTPUSH_VALIDATION_DATA_PATH=/absolute/path/to/validation-data.bin
 ```
@@ -122,13 +128,14 @@ find-my-timeline backfill-items --backend rustpush --username your-apple-id@exam
 
 ```bash
 cp .env.example .env
-mkdir -p session/rustpush/payloads data
+mkdir -p session/rustpush data
 ```
 
 Set rustpush backend in `.env`:
 
 ```bash
 LOCATION_BACKEND=rustpush
+RUSTPUSH_BRIDGE_DELEGATE=/absolute/path/in/container/to/runtime/find-my-rustpush-bridge
 ```
 
 First-time auth, then launch:
@@ -144,9 +151,7 @@ Optional item backfill run:
 docker compose run --rm find-my-timeline find-my-timeline backfill-items --backend rustpush --username your-apple-id@example.com
 ```
 
-By default, Docker uses the repository’s bundled rustpush bridge **contract** binary.
-That mode is file-driven (it reads payloads from disk instead of talking to Apple APIs directly).
-If you are using that mode, put payload files in `./session/rustpush/payloads/`:
+If you explicitly enable contract mode (`RUSTPUSH_ALLOW_CONTRACT_MODE=true`), put payload files in `./session/rustpush/payloads/`:
 
 - `sync.json`
 - `backfill.jsonl`
@@ -163,6 +168,8 @@ Set in `.env` or pass CLI flags:
 - `WEB_HOST`, `WEB_PORT`
 - `RUSTPUSH_BRIDGE_BIN`
 - `RUSTPUSH_STATE_DIR`
+- `RUSTPUSH_BRIDGE_DELEGATE`
+- `RUSTPUSH_ALLOW_CONTRACT_MODE`
 - `RUSTPUSH_VALIDATION_DATA_PATH`
 - `RUSTPUSH_SYNC_TIMEOUT_SEC`
 - `RUSTPUSH_APS_ENABLED`
@@ -191,7 +198,8 @@ docker compose up -d --build
 ### rustpush backend in Docker
 
 Use the command sequence in `Rustpush Setup And Launch -> Docker`.  
-Additional note: to use an external runtime bridge inside the container, set `RUSTPUSH_BRIDGE_DELEGATE` in `.env`.
+`RUSTPUSH_BRIDGE_DELEGATE` is required by default.  
+Only set `RUSTPUSH_ALLOW_CONTRACT_MODE=true` when you intentionally run file-driven contract payload replay.
 
 ### Re-authenticate (session expired)
 

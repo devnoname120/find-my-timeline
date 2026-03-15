@@ -12,4 +12,6 @@ services:
       WEB_HOST: 0.0.0.0
       RUSTPUSH_BRIDGE_BIN: /app/rustpush_bridge/target/release/find-my-rustpush-bridge
       RUSTPUSH_STATE_DIR: /root/.find-my-timeline/rustpush
+      RUSTPUSH_BRIDGE_DELEGATE: ${RUSTPUSH_BRIDGE_DELEGATE:-}
+      RUSTPUSH_ALLOW_CONTRACT_MODE: ${RUSTPUSH_ALLOW_CONTRACT_MODE:-false}
     restart: unless-stopped

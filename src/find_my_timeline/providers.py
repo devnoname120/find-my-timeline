@@ -157,6 +157,8 @@ class RustpushBridgeConfig:
 
     bridge_bin: str
     state_dir: str
+    delegate_bin: str | None = None
+    allow_contract_mode: bool = False
     validation_data_path: str | None = None
     sync_timeout_sec: int = 120
 
@@ -251,6 +253,7 @@ class RustpushBridgeProvider(LocationProvider):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=self._bridge_env(),
             )
         except OSError as exc:
             raise ProviderError(f"Failed to start APS listener: {exc}") from exc
@@ -284,7 +287,7 @@ class RustpushBridgeProvider(LocationProvider):
 
     def _run_bridge(self, args: list[str], timeout: int) -> str:
         command = [self.config.bridge_bin, *args]
-        env = os.environ.copy()
+        env = self._bridge_env()
 
         try:
             result = subprocess.run(
@@ -304,6 +307,14 @@ class RustpushBridgeProvider(LocationProvider):
 
         return result.stdout
 
+    def _bridge_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        if self.config.delegate_bin:
+            env["RUSTPUSH_BRIDGE_DELEGATE"] = self.config.delegate_bin
+        else:
+            env.pop("RUSTPUSH_BRIDGE_DELEGATE", None)
+        return env
+
 
 def build_provider(
     backend: str,
@@ -312,20 +323,45 @@ def build_provider(
     *,
     rustpush_bridge_bin: str,
     rustpush_state_dir: str,
-    rustpush_validation_data_path: str | None,
-    rustpush_sync_timeout_sec: int,
+    rustpush_validation_data_path: str | None = None,
+    rustpush_sync_timeout_sec: int = 120,
+    rustpush_bridge_delegate: str | None = None,
+    rustpush_allow_contract_mode: bool = False,
 ) -> LocationProvider:
     """Factory for location providers."""
     if backend == "pyicloud":
         return PyiCloudLocationProvider(username=username, password=password)
 
     if backend == "rustpush":
+        delegate_bin = _maybe_str(rustpush_bridge_delegate)
+        if delegate_bin:
+            delegate_bin = delegate_bin.strip() or None
+        if not delegate_bin:
+            delegate_env = os.getenv("RUSTPUSH_BRIDGE_DELEGATE")
+            if delegate_env:
+                delegate_bin = delegate_env.strip() or None
+
+        allow_contract_mode = rustpush_allow_contract_mode
+        if not allow_contract_mode:
+            allow_contract_env = os.getenv("RUSTPUSH_ALLOW_CONTRACT_MODE")
+            if allow_contract_env is not None:
+                allow_contract_mode = allow_contract_env.strip().lower() in {"1", "true", "yes", "on"}
+
+        if not delegate_bin and not allow_contract_mode:
+            raise ProviderError(
+                "rustpush backend requires delegated runtime mode by default. "
+                "Set RUSTPUSH_BRIDGE_DELEGATE to your runtime bridge path, or "
+                "set RUSTPUSH_ALLOW_CONTRACT_MODE=true to opt in to file-driven contract mode."
+            )
+
         return RustpushBridgeProvider(
             username=username,
             password=password,
             config=RustpushBridgeConfig(
                 bridge_bin=rustpush_bridge_bin,
                 state_dir=rustpush_state_dir,
+                delegate_bin=delegate_bin,
+                allow_contract_mode=allow_contract_mode,
                 validation_data_path=rustpush_validation_data_path,
                 sync_timeout_sec=rustpush_sync_timeout_sec,
             ),

@@ -1,10 +1,14 @@
 from datetime import datetime
 
+import pytest
+
 from find_my_timeline.providers import (
+    ProviderError,
     RustpushBridgeConfig,
     RustpushBridgeProvider,
     _extract_timestamp,
     _parse_rustpush_sync_payload,
+    build_provider,
 )
 
 
@@ -103,3 +107,73 @@ def test_backfill_result_parses_checkpoints_and_completed_ids():
     assert len(result.entities) == 1
     assert result.checkpoints == {"item-1": "cursor-123"}
     assert result.completed_ids == {"item-1"}
+
+
+def test_build_provider_rustpush_requires_delegate_by_default():
+    with pytest.raises(ProviderError) as excinfo:
+        build_provider(
+            backend="rustpush",
+            username="test@example.com",
+            password=None,
+            rustpush_bridge_bin="find-my-rustpush-bridge",
+            rustpush_state_dir="/tmp/rustpush",
+            rustpush_bridge_delegate=None,
+            rustpush_allow_contract_mode=False,
+            rustpush_validation_data_path=None,
+            rustpush_sync_timeout_sec=120,
+        )
+    assert "RUSTPUSH_BRIDGE_DELEGATE" in str(excinfo.value)
+
+
+def test_build_provider_rustpush_allows_contract_mode_when_explicit():
+    provider = build_provider(
+        backend="rustpush",
+        username="test@example.com",
+        password=None,
+        rustpush_bridge_bin="find-my-rustpush-bridge",
+        rustpush_state_dir="/tmp/rustpush",
+        rustpush_bridge_delegate=None,
+        rustpush_allow_contract_mode=True,
+        rustpush_validation_data_path=None,
+        rustpush_sync_timeout_sec=120,
+    )
+
+    assert isinstance(provider, RustpushBridgeProvider)
+    assert provider.config.allow_contract_mode is True
+    assert provider.config.delegate_bin is None
+
+
+def test_build_provider_rustpush_reads_delegate_from_env(monkeypatch):
+    monkeypatch.setenv("RUSTPUSH_BRIDGE_DELEGATE", "/opt/rustpush-runtime-bridge")
+    provider = build_provider(
+        backend="rustpush",
+        username="test@example.com",
+        password=None,
+        rustpush_bridge_bin="find-my-rustpush-bridge",
+        rustpush_state_dir="/tmp/rustpush",
+        rustpush_bridge_delegate=None,
+        rustpush_allow_contract_mode=False,
+        rustpush_validation_data_path=None,
+        rustpush_sync_timeout_sec=120,
+    )
+
+    assert isinstance(provider, RustpushBridgeProvider)
+    assert provider.config.delegate_bin == "/opt/rustpush-runtime-bridge"
+
+
+def test_rustpush_provider_bridge_env_sets_delegate():
+    provider = RustpushBridgeProvider(
+        username="test@example.com",
+        password=None,
+        config=RustpushBridgeConfig(
+            bridge_bin="find-my-rustpush-bridge",
+            state_dir="/tmp/rustpush",
+            delegate_bin="/opt/rustpush-runtime-bridge",
+            allow_contract_mode=False,
+            validation_data_path=None,
+            sync_timeout_sec=120,
+        ),
+    )
+
+    env = provider._bridge_env()
+    assert env["RUSTPUSH_BRIDGE_DELEGATE"] == "/opt/rustpush-runtime-bridge"

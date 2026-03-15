@@ -26,3 +26,4 @@ The bridge uses:
 ## Delegation
 
 If `RUSTPUSH_BRIDGE_DELEGATE` is set, this binary forwards all commands/args to that executable and exits with the same status code.
+The Python app treats delegation as the default runtime mode and only uses local file payload mode when explicitly allowed.

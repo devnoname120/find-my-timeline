@@ -111,6 +111,8 @@ def test_pyicloud_backend_default_unchanged():
         password="secret",
         rustpush_bridge_bin="unused",
         rustpush_state_dir="unused",
+        rustpush_bridge_delegate=None,
+        rustpush_allow_contract_mode=False,
         rustpush_validation_data_path=None,
         rustpush_sync_timeout_sec=120,
     )

@@ -55,6 +55,8 @@ def get_config() -> dict[str, object]:
             "RUSTPUSH_STATE_DIR",
             str(Path.home() / ".find-my-timeline" / "rustpush"),
         ),
+        "rustpush_bridge_delegate": os.getenv("RUSTPUSH_BRIDGE_DELEGATE"),
+        "rustpush_allow_contract_mode": _getenv_bool("RUSTPUSH_ALLOW_CONTRACT_MODE", False),
         "rustpush_validation_data_path": os.getenv("RUSTPUSH_VALIDATION_DATA_PATH"),
         "rustpush_sync_timeout_sec": int(os.getenv("RUSTPUSH_SYNC_TIMEOUT_SEC", "120")),
         "rustpush_aps_enabled": _getenv_bool("RUSTPUSH_APS_ENABLED", True),
@@ -70,6 +72,12 @@ def build_location_provider(config: dict[str, object], username: str, password: 
         password=password,
         rustpush_bridge_bin=str(config["rustpush_bridge_bin"]),
         rustpush_state_dir=str(config["rustpush_state_dir"]),
+        rustpush_bridge_delegate=(
+            str(config["rustpush_bridge_delegate"])
+            if config["rustpush_bridge_delegate"]
+            else None
+        ),
+        rustpush_allow_contract_mode=bool(config["rustpush_allow_contract_mode"]),
         rustpush_validation_data_path=(
             str(config["rustpush_validation_data_path"])
             if config["rustpush_validation_data_path"]
