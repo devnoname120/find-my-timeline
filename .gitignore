@@ -45,3 +45,6 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Rust bridge
+rustpush_bridge/target/

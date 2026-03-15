@@ -1,8 +1,19 @@
 """iCloud authentication module with 2FA support."""
 
 from pathlib import Path
-from pyicloud import PyiCloudService
-from pyicloud.exceptions import PyiCloudFailedLoginException
+from typing import Any
+
+try:
+    from pyicloud import PyiCloudService
+    from pyicloud.exceptions import PyiCloudFailedLoginException
+    _PYICLOUD_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - depends on runtime environment
+    PyiCloudService = Any  # type: ignore[assignment]
+
+    class PyiCloudFailedLoginException(Exception):
+        """Fallback exception when pyicloud is unavailable."""
+
+    _PYICLOUD_IMPORT_ERROR = exc
 
 
 class ICloudAuth:
@@ -30,6 +41,11 @@ class ICloudAuth:
             allow_2fa: If False, raises an error instead of prompting for 2FA.
                       Use this for non-interactive contexts like Docker.
         """
+        if _PYICLOUD_IMPORT_ERROR is not None:
+            raise AuthenticationError(
+                "pyicloud is not installed. Install project dependencies to use the pyicloud backend."
+            ) from _PYICLOUD_IMPORT_ERROR
+
         try:
             self.api = PyiCloudService(
                 self.username,

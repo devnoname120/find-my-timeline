@@ -1,77 +1,93 @@
 # Find My Timeline
 
-Track historical location data from your Apple devices using the Find My service.
+Track historical Find My location data over time.
 
 ![Preview](preview.png)
 ![Preview Detail](preview2.png)
 ![Preview Timeline](preview3.png)
 
-Apple's Find My only shows current device locations. This tool polls your devices at random intervals and stores the history in a local database, letting you view location timelines on a map.
+## Backends
+
+- `pyicloud` (default): current-state polling via pyicloud.
+- `rustpush` (optional): bridge-based ingestion path designed for location timelines with item/device/person entities and multi-report payload flattening.
 
 ## Setup
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -e .
 cp .env.example .env
-# Edit .env with your Apple ID
 ```
 
-## Usage
+## Quick Start
 
 ```bash
-# First-time: authenticate (handles 2FA)
+# 1) Authenticate backend session
 find-my-timeline auth
 
-# Start polling + web UI
+# 2) Run poller + web UI
 find-my-timeline start
 
-# Open http://127.0.0.1:5000 in your browser
+# 3) Open:
+# http://127.0.0.1:5000
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `auth` | Authenticate with iCloud (interactive 2FA) |
-| `poll` | Start location polling only |
-| `web` | Start web interface only |
-| `start` | Start both poller and web UI |
-| `stats` | Show database statistics |
-| `devices` | List tracked devices |
+| `auth` | Authenticate and persist session state |
+| `poll` | Start polling only |
+| `web` | Start web UI only |
+| `start` | Start poller + web UI |
+| `backfill-items` | Run rustpush item backfill cycle |
+| `stats` | Show DB statistics |
+| `devices` | List tracked entities |
+
+## rustpush Bridge
+
+The repo includes a Rust bridge binary contract at `rustpush_bridge/` with commands:
+
+- `bootstrap`
+- `sync`
+- `backfill-items`
+- `listen-aps`
+
+By default, the bundled bridge reads payload files from its state directory (`payloads/*.json*`) and persists backfill cursor state.  
+Set `RUSTPUSH_BRIDGE_DELEGATE` to forward bridge commands to an external runtime binary.
+
+Build it:
+
+```bash
+cd rustpush_bridge
+cargo build --release
+```
+
+Set in `.env`:
+
+- `LOCATION_BACKEND=rustpush`
+- `RUSTPUSH_BRIDGE_BIN=./rustpush_bridge/target/release/find-my-rustpush-bridge`
+- `RUSTPUSH_STATE_DIR=~/.find-my-timeline/rustpush`
+
+APS behavior follows OpenBubbles-style handling:
+
+- APS events are treated as update signals (not direct coordinate writes).
+- APS mode triggers extra fast refresh polling (`RUSTPUSH_APS_REFRESH_INTERVAL_SEC`, default 5s).
+- Base polling cadence remains random 7-10 minutes.
 
 ## Configuration
 
-Set in `.env` or pass as CLI options:
+Set in `.env` or pass CLI flags:
 
-- `ICLOUD_USERNAME` - Your Apple ID
-- `ICLOUD_PASSWORD` - Password (optional, will prompt)
-- `POLL_MIN_INTERVAL` - Minimum poll interval in minutes (default: 7)
-- `POLL_MAX_INTERVAL` - Maximum poll interval in minutes (default: 10)
-- `DATABASE_PATH` - SQLite database path (default: ./data/locations.db)
-- `WEB_HOST` / `WEB_PORT` - Web server binding (default: 127.0.0.1:5000)
-
-## Docker
-
-### First-time setup (interactive 2FA required)
-
-```bash
-cp .env.example .env
-# Edit .env with your Apple ID
-
-mkdir -p session data
-docker compose run --rm find-my-timeline find-my-timeline auth
-# Enter 2FA code when prompted
-```
-
-### Run
-
-```bash
-docker compose up -d
-# Open http://localhost:5000
-```
-
-### Re-authenticate (when session expires, ~90 days)
-
-```bash
-docker compose run --rm find-my-timeline find-my-timeline auth
-```
+- `ICLOUD_USERNAME`, `ICLOUD_PASSWORD`
+- `LOCATION_BACKEND`
+- `POLL_MIN_INTERVAL`, `POLL_MAX_INTERVAL`
+- `DATABASE_PATH`
+- `WEB_HOST`, `WEB_PORT`
+- `RUSTPUSH_BRIDGE_BIN`
+- `RUSTPUSH_STATE_DIR`
+- `RUSTPUSH_VALIDATION_DATA_PATH`
+- `RUSTPUSH_SYNC_TIMEOUT_SEC`
+- `RUSTPUSH_APS_ENABLED`
+- `RUSTPUSH_APS_REFRESH_INTERVAL_SEC`

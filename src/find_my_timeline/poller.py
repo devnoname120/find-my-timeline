@@ -1,36 +1,47 @@
 """Location polling service with random intervals."""
 
+from __future__ import annotations
+
 import logging
 import random
 import signal
+import threading
 import time
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
-from .auth import ICloudAuth, AuthenticationError
+from .auth import AuthenticationError
 from .database import LocationDatabase
+from .providers import LocationProvider, ProviderError, TrackedEntity
 
 logger = logging.getLogger(__name__)
 
 
 class LocationPoller:
-    """Polls device locations at random intervals and stores them."""
+    """Polls entity locations at random intervals and stores them."""
 
     def __init__(
         self,
-        auth: ICloudAuth,
+        provider: LocationProvider,
         database: LocationDatabase,
         min_interval: int = 7,
         max_interval: int = 10,
+        aps_enabled: bool = False,
+        aps_refresh_interval_sec: int = 5,
     ):
-        self.auth = auth
+        self.provider = provider
         self.database = database
         self.min_interval = min_interval
         self.max_interval = max_interval
-        self._running = False
-        self._on_poll_callbacks: list[Callable[[list[dict]], None]] = []
+        self.aps_enabled = aps_enabled
+        self.aps_refresh_interval_sec = aps_refresh_interval_sec
 
-    def on_poll(self, callback: Callable[[list[dict]], None]) -> None:
+        self._running = False
+        self._on_poll_callbacks: list[Callable[[list[dict[str, Any]]], None]] = []
+        self._poll_lock = threading.Lock()
+        self._aps_refresh_thread: threading.Thread | None = None
+
+    def on_poll(self, callback: Callable[[list[dict[str, Any]]], None]) -> None:
         """Register a callback to be called after each poll."""
         self._on_poll_callbacks.append(callback)
 
@@ -38,151 +49,187 @@ class LocationPoller:
         """Get a random interval between min and max (in minutes)."""
         return random.uniform(self.min_interval, self.max_interval) * 60
 
-    def poll_once(self) -> list[dict]:
-        """Poll all devices once and store locations. Returns the recorded locations."""
-        try:
-            devices = self.auth.get_devices()
-        except Exception as e:
-            logger.error(f"Failed to get devices: {e}")
-            return []
+    def _on_aps_event(self, event: dict[str, Any]) -> None:
+        """Handle APS event notifications from provider listener."""
+        event_type = event.get("type", "unknown")
+        logger.debug("Received APS event: %s", event_type)
 
-        recorded = []
+    def _run_aps_refresh_loop(self) -> None:
+        """Run a fast refresh loop in APS mode (OpenBubbles-style polling cadence)."""
+        while self._running:
+            time.sleep(self.aps_refresh_interval_sec)
+            if not self._running:
+                break
+            try:
+                self.poll_once(source="aps")
+            except Exception as exc:
+                logger.error("APS refresh poll failed: %s", exc)
 
-        for device in devices:
-            device_id = device["id"]
-            location = device.get("location")
+    def poll_once(self, source: str = "poll") -> list[dict[str, Any]]:
+        """Poll all entities once and store deduplicated locations."""
+        with self._poll_lock:
+            try:
+                entities = self.provider.fetch_entities()
+            except (ProviderError, AuthenticationError) as exc:
+                logger.error("Failed to fetch entities: %s", exc)
+                return []
+            except Exception as exc:
+                logger.error("Unexpected provider error: %s", exc)
+                return []
 
-            # Update device info
-            self.database.upsert_device(
-                device_id=device_id,
-                name=device["name"],
-                device_display_name=device.get("device_display_name"),
-                device_class=device.get("device_class"),
-            )
+            recorded, _ = self._ingest_entities(entities, source=source)
 
-            if not location:
-                logger.warning(f"No location available for device {device['name']}")
-                continue
+            for callback in self._on_poll_callbacks:
+                try:
+                    callback(recorded)
+                except Exception as exc:
+                    logger.error("Callback error: %s", exc)
 
-            latitude = location.get("latitude")
-            longitude = location.get("longitude")
+            return recorded
 
-            if latitude is None or longitude is None:
-                logger.warning(f"Invalid coordinates for device {device['name']}")
-                continue
+    def ingest_entities(self, entities: list[TrackedEntity], source: str = "manual") -> tuple[list[dict[str, Any]], int]:
+        """Insert entities from an external sync/backfill flow."""
+        with self._poll_lock:
+            return self._ingest_entities(entities, source=source)
 
-            # Parse timestamp (Apple returns milliseconds since epoch)
-            timestamp_ms = location.get("timeStamp")
-            if timestamp_ms:
-                timestamp = datetime.fromtimestamp(timestamp_ms / 1000)
-            elif location.get("isOld", False):
-                # Skip if location is marked as old/stale and no timestamp
-                logger.info(f"Skipping stale location for {device['name']}")
-                continue
-            else:
-                timestamp = datetime.now()
+    def _ingest_entities(self, entities: list[TrackedEntity], source: str) -> tuple[list[dict[str, Any]], int]:
+        recorded: list[dict[str, Any]] = []
+        batch_rows: list[dict[str, Any]] = []
+        seen_fingerprints: set[str] = set()
 
-            # Check if this is a duplicate (same timestamp as last recorded)
-            last_location = self.database.get_latest_location(device_id)
-            if last_location:
-                last_ts = last_location.get("timestamp")
-                if last_ts and str(last_ts) == str(timestamp):
-                    logger.debug(f"Skipping duplicate location for {device['name']}")
+        for entity in entities:
+            self._upsert_entity(entity)
+            for sample in entity.locations:
+                fingerprint = self.database.compute_report_fingerprint(
+                    entity_type=entity.entity_type,
+                    device_id=entity.entity_id,
+                    source_backend=entity.source_backend,
+                    timestamp=sample.timestamp,
+                    latitude=sample.latitude,
+                    longitude=sample.longitude,
+                    horizontal_accuracy=sample.horizontal_accuracy,
+                    key_index=sample.key_index,
+                    location_id=sample.location_id,
+                )
+
+                if fingerprint in seen_fingerprints:
                     continue
 
-            # Record the location
-            location_id = self.database.record_location(
-                device_id=device_id,
-                latitude=latitude,
-                longitude=longitude,
-                timestamp=timestamp,
-                horizontal_accuracy=location.get("horizontalAccuracy"),
-                position_type=location.get("positionType"),
-                battery_level=device.get("battery_level"),
-            )
+                seen_fingerprints.add(fingerprint)
+                batch_rows.append(
+                    {
+                        "device_id": entity.entity_id,
+                        "latitude": sample.latitude,
+                        "longitude": sample.longitude,
+                        "horizontal_accuracy": sample.horizontal_accuracy,
+                        "vertical_accuracy": sample.vertical_accuracy,
+                        "position_type": sample.position_type,
+                        "battery_level": sample.battery_level,
+                        "status": sample.status,
+                        "confidence": sample.confidence,
+                        "key_index": sample.key_index,
+                        "source_backend": entity.source_backend,
+                        "raw_json": sample.raw_json,
+                        "report_fingerprint": fingerprint,
+                        "timestamp": sample.timestamp,
+                    }
+                )
 
-            recorded_location = {
-                "id": location_id,
-                "device_id": device_id,
-                "device_name": device["name"],
-                "latitude": latitude,
-                "longitude": longitude,
-                "timestamp": timestamp.isoformat(),
-                "accuracy": location.get("horizontalAccuracy"),
-                "position_type": location.get("positionType"),
-                "battery_level": device.get("battery_level"),
-            }
-            recorded.append(recorded_location)
+                recorded.append(
+                    {
+                        "device_id": entity.entity_id,
+                        "device_name": entity.name,
+                        "entity_type": entity.entity_type,
+                        "source": entity.source_backend,
+                        "latitude": sample.latitude,
+                        "longitude": sample.longitude,
+                        "timestamp": sample.timestamp.isoformat(),
+                        "accuracy": sample.horizontal_accuracy,
+                        "confidence": sample.confidence,
+                        "key_index": sample.key_index,
+                        "poll_source": source,
+                    }
+                )
 
-            logger.info(
-                f"Recorded location for {device['name']}: "
-                f"({latitude:.6f}, {longitude:.6f}) at {timestamp}"
-            )
+        inserted = self.database.record_locations_batch(batch_rows)
+        if inserted:
+            logger.info("Recorded %d location(s) [%s]", inserted, source)
+        return recorded, inserted
 
-        # Call registered callbacks
-        for callback in self._on_poll_callbacks:
-            try:
-                callback(recorded)
-            except Exception as e:
-                logger.error(f"Callback error: {e}")
-
-        return recorded
+    def _upsert_entity(self, entity: TrackedEntity) -> None:
+        self.database.upsert_device(
+            device_id=entity.entity_id,
+            name=entity.name,
+            device_display_name=entity.device_display_name,
+            device_class=entity.device_class,
+            entity_type=entity.entity_type,
+            source_backend=entity.source_backend,
+            metadata=entity.metadata,
+        )
 
     def start(self, setup_signals: bool = True, allow_2fa: bool = False) -> None:
-        """Start the polling loop. Blocks until stopped.
-
-        Args:
-            setup_signals: Whether to set up signal handlers (only works in main thread)
-            allow_2fa: If False (default), refuses to prompt for 2FA interactively.
-                      This prevents lockouts in non-interactive contexts like Docker.
-        """
+        """Start the polling loop. Blocks until stopped."""
         self._running = True
 
-        # Set up signal handlers for graceful shutdown (only in main thread)
         if setup_signals:
             try:
                 def handle_signal(signum, frame):
-                    logger.info(f"Received signal {signum}, stopping...")
+                    logger.info("Received signal %s, stopping...", signum)
                     self._running = False
 
                 signal.signal(signal.SIGINT, handle_signal)
                 signal.signal(signal.SIGTERM, handle_signal)
             except ValueError:
-                # Signal only works in main thread - skip if in background thread
                 pass
 
         logger.info(
-            f"Starting location poller (interval: {self.min_interval}-{self.max_interval} minutes)"
+            "Starting location poller backend=%s (interval: %s-%s minutes)",
+            self.provider.backend_name,
+            self.min_interval,
+            self.max_interval,
         )
 
-        # Authenticate (don't allow 2FA by default to prevent lockouts in Docker)
         try:
-            self.auth.authenticate(allow_2fa=allow_2fa)
+            self.provider.authenticate(allow_2fa=allow_2fa)
             logger.info("Authentication successful")
-        except AuthenticationError as e:
-            logger.error(f"Authentication failed: {e}")
+        except (ProviderError, AuthenticationError) as exc:
+            logger.error("Authentication failed: %s", exc)
             return
 
-        # Initial poll
-        self.poll_once()
+        if self.aps_enabled and self.provider.backend_name == "rustpush":
+            try:
+                self.provider.start_aps_listener(self._on_aps_event)
+                if self.aps_refresh_interval_sec > 0:
+                    self._aps_refresh_thread = threading.Thread(
+                        target=self._run_aps_refresh_loop,
+                        daemon=True,
+                    )
+                    self._aps_refresh_thread.start()
+                logger.info(
+                    "APS mode enabled (refresh interval: %ss)",
+                    self.aps_refresh_interval_sec,
+                )
+            except ProviderError as exc:
+                logger.error("Failed to start APS mode: %s", exc)
+
+        self.poll_once(source="initial")
 
         while self._running:
             interval = self._get_next_interval()
-            next_poll = datetime.now().timestamp() + interval
-            next_poll_time = datetime.fromtimestamp(next_poll).strftime("%H:%M:%S")
+            next_poll_time = datetime.fromtimestamp(datetime.now().timestamp() + interval).strftime("%H:%M:%S")
+            logger.info("Next poll in %.1f minutes (at %s)", interval / 60, next_poll_time)
 
-            logger.info(f"Next poll in {interval/60:.1f} minutes (at {next_poll_time})")
-
-            # Sleep in small increments to allow for graceful shutdown
             sleep_end = time.time() + interval
             while self._running and time.time() < sleep_end:
                 time.sleep(min(1, sleep_end - time.time()))
 
             if self._running:
-                self.poll_once()
+                self.poll_once(source="poll")
 
         logger.info("Poller stopped")
+        self.provider.stop()
 
     def stop(self) -> None:
         """Stop the polling loop."""
         self._running = False
+        self.provider.stop()
