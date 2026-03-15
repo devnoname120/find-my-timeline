@@ -78,6 +78,80 @@ APS behavior follows OpenBubbles-style handling:
 - APS mode triggers extra fast refresh polling (`RUSTPUSH_APS_REFRESH_INTERVAL_SEC`, default 5s).
 - Base polling cadence remains random 7-10 minutes.
 
+## Rustpush Setup And Launch
+
+### Local (non-Docker)
+
+```bash
+# from repo root
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
+cp .env.example .env
+
+# build rustpush bridge
+cd rustpush_bridge
+cargo build --release
+cd ..
+```
+
+Edit `.env` for rustpush:
+
+```bash
+LOCATION_BACKEND=rustpush
+RUSTPUSH_BRIDGE_BIN=./rustpush_bridge/target/release/find-my-rustpush-bridge
+RUSTPUSH_STATE_DIR=${HOME}/.find-my-timeline/rustpush
+# optional if needed for bootstrap:
+# RUSTPUSH_VALIDATION_DATA_PATH=/absolute/path/to/validation-data.bin
+```
+
+First-time auth, then launch:
+
+```bash
+find-my-timeline auth --backend rustpush --username your-apple-id@example.com
+find-my-timeline start --backend rustpush
+```
+
+Optional item backfill run:
+
+```bash
+find-my-timeline backfill-items --backend rustpush --username your-apple-id@example.com
+```
+
+### Docker
+
+```bash
+cp .env.example .env
+mkdir -p session/rustpush/payloads data
+```
+
+Set rustpush backend in `.env`:
+
+```bash
+LOCATION_BACKEND=rustpush
+```
+
+First-time auth, then launch:
+
+```bash
+docker compose run --rm find-my-timeline find-my-timeline auth --backend rustpush --username your-apple-id@example.com
+docker compose up -d --build
+```
+
+Optional item backfill run:
+
+```bash
+docker compose run --rm find-my-timeline find-my-timeline backfill-items --backend rustpush --username your-apple-id@example.com
+```
+
+By default, Docker uses the repository’s bundled rustpush bridge **contract** binary.
+That mode is file-driven (it reads payloads from disk instead of talking to Apple APIs directly).
+If you are using that mode, put payload files in `./session/rustpush/payloads/`:
+
+- `sync.json`
+- `backfill.jsonl`
+- `aps.ndjson`
+
 ## Configuration
 
 Set in `.env` or pass CLI flags:
@@ -114,23 +188,10 @@ docker compose up -d --build
 # open http://127.0.0.1:5000
 ```
 
-### Use rustpush backend in Docker
+### rustpush backend in Docker
 
-Set these in `.env` before starting:
-
-```bash
-LOCATION_BACKEND=rustpush
-```
-
-Notes:
-
-- `docker-compose.yml` forces `RUSTPUSH_BRIDGE_BIN` to the in-container binary path.
-- Rustpush state persists in `./session/rustpush` on the host (mounted from `/root/.find-my-timeline/rustpush`).
-- For the bundled bridge contract mode, place payload files under `./session/rustpush/payloads/`:
-  - `sync.json`
-  - `backfill.jsonl`
-  - `aps.ndjson`
-- To use an external runtime bridge inside the container, set `RUSTPUSH_BRIDGE_DELEGATE` in `.env`.
+Use the command sequence in `Rustpush Setup And Launch -> Docker`.  
+Additional note: to use an external runtime bridge inside the container, set `RUSTPUSH_BRIDGE_DELEGATE` in `.env`.
 
 ### Re-authenticate (session expired)
 
